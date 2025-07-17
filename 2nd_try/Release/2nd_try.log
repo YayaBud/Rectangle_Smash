@@ -1,0 +1,15 @@
+﻿  2nd_try.cpp
+  game.cpp
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(160,20): warning C4018: '<': signed/unsigned mismatch
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(188,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(192,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(196,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(200,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(204,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(208,23): warning C4244: '+=': conversion from 'float' to 'unsigned int', possible loss of data
+D:\amity\testing\2nd\2nd_try\2nd_try\game.cpp(285,27): warning C4018: '<': signed/unsigned mismatch
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 227 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+  2nd_try.vcxproj -> D:\amity\testing\2nd\2nd_try\Release\2nd_try.exe
