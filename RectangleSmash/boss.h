@@ -1,11 +1,14 @@
 #pragma once
 #include <SFML/Graphics.hpp>
 #include <vector>
+#include <functional>   // std::function
 
 struct BossProj {
 	sf::CircleShape shape;
 	sf::Vector2f velocity;
 	int hp;
+	bool isMissile = false;
+	sf::Sprite sprite;
 };
 
 struct BossData {
@@ -20,6 +23,7 @@ struct BossData {
 
 struct BossMinion {
 	sf::CircleShape shape;
+	sf::Sprite      sprite;
 	sf::Vector2f velocity;
 	float teleportTimer;
 	float teleportTimerMax;
@@ -38,29 +42,100 @@ class Boss
 private:
 	BossData bossData;
 	bool bossActive;
-	std::vector<BossProj> bossProjectiles;
-	std::vector<BossMinion> bossMinions;
-	std::vector<BossProj> minionBullets;
+	bool bossIsDying = false;
+	std::vector<BossProj>    bossProjectiles;
+	std::vector<BossMinion>  bossMinions;
+	std::vector<BossProj>    minionBullets;
 	std::vector<BossPowerUp> bossPowerUps;
 	sf::RectangleShape bossBeam;
 	sf::RenderWindow* window;
-	int difficulty; // 0=easy, 1=normal, 2=hard
+	int difficulty;
+
+	// Sprite rendering
+	sf::Texture bossTexture;
+	sf::Sprite  bossSprite;
+	bool        textureLoaded = false;
+
+	sf::Texture minionTexture;
+	bool        minionTexLoaded = false;
+
+	sf::Texture missileTex;
+	bool        missileTexLoaded = false;
+
+	float phaseFlashTimer = 0.f;
+	float phaseAnnounceTimer = 0.f;
+
+	// Phase system
+	int   phase = 1;           // 1 = normal, 2 = half HP agro, 3 = quarter HP frenzy
+	bool  phase2Triggered = false;
+	bool  phase3Triggered = false;
+
+	// Separate minion respawn timer so it's not tied to the attack cycle
+	float minionRespawnTimer = 0.f;
+	float minionRespawnInterval = 480.f; // ~4s at 120fps; shortened per phase
 
 	static const int MAX_MINIONS = 2;
 
 public:
 	Boss();
 	virtual ~Boss();
+
 	void initBoss(sf::RenderWindow* window, int difficulty = 1);
-	void update(int& health, sf::ConvexShape& player,
-		unsigned& points, bool& isBossStage, bool isInvincible, bool isSlowed,
-		float& invincibilityTimer, float& deathRayTimer, float& fastFireTimer,
-		float& laserFireTimerMax);
+
+	// ── Original 11-param update — matches boss.cpp exactly ──────────────
+	void update(int& health,
+		sf::ConvexShape& player,
+		unsigned& points,
+		bool& isBossStage,
+		bool isInvincible,
+		bool isSlowed,
+		float& invincibilityTimer,
+		float& deathRayTimer,
+		float& fastFireTimer,
+		float& laserFireTimerMax,
+		float& screenShakeOut);
+
+	// ── 13-param inline overload — called by game.cpp ────────────────────
+	inline void update(int& health,
+		sf::ConvexShape& player,
+		unsigned& points,
+		bool& isBossStage,
+		bool isInvincible,
+		bool isSlowed,
+		float& invincibilityTimer,
+		float& deathRayTimer,
+		float& fastFireTimer,
+		float& laserFireTimerMax,
+		float& screenShakeOut,
+		int&   /*maxHealth*/,
+		std::function<void(int)> /*onPlayerDamage*/)
+	{
+		update(health, player, points, isBossStage,
+			isInvincible, isSlowed,
+			invincibilityTimer, deathRayTimer, fastFireTimer,
+			laserFireTimerMax, screenShakeOut);
+	}
+
 	void render(sf::RenderTarget& target);
 
-	bool isActive() const { return bossActive; }
+	// ── Phase announcement overlay stub ──────────────────────────────────
+	inline void renderPhaseAnnouncement(sf::RenderTarget& /*target*/,
+		sf::Font& /*font*/) {
+	}
+
+	// ── State / status queries ────────────────────────────────────────────
+	bool isActive()     const { return bossActive; }
+	bool isDying()      const { return bossIsDying; }
+	int  getBossState() const { return bossData.state; }
+	bool isBeamActive() const { return bossData.state == 2; }
+	int  getHp()        const { return bossData.hp; }
+	int  getMaxHp()     const { return bossData.maxHp; }
+
 	void setActive(bool active) { bossActive = active; }
 	sf::FloatRect getBounds() const { return bossData.shape.getGlobalBounds(); }
 	void takeDamage(int dmg);
+	void move(float dx, float dy) { bossData.shape.move(dx, dy); }
+
 	std::vector<BossMinion>& getMinions() { return bossMinions; }
+	std::vector<BossProj>& getProjectiles() { return bossProjectiles; }  // used by game_features.cpp
 };
