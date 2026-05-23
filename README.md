@@ -1,6 +1,10 @@
 # RECTANGLE SMASH: ULTIMATE EDITION
 
+![Rectangle Smash Gameplay](RectangleSmash/assests/github/RectangleSmash.gif)
+
 A fast, punishing 2D top-down arena shooter built in C++ with SFML 2.6. Fight through escalating waves of geometric enemies, survive two boss encounters, and push your run as far as possible with perks, upgrades, and ship-specific abilities.
+
+![Main Menu](RectangleSmash/assests/github/Screenshot_Menu.png)
 
 ---
 
@@ -69,6 +73,9 @@ From wave 3 onward, enemies can spawn with **shields** that must be stripped bef
 ---
 
 ## BOSSES
+
+![Boss 1](RectangleSmash/assests/github/Screenshot_Boss1.png)
+![Boss 2](RectangleSmash/assests/github/Screenshot_Boss2.png)
 
 **Boss 1 — The Rectangle Overlord** (waves 5, 15, 20…)
 
