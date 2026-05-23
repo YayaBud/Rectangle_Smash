@@ -4,9 +4,7 @@
 
 **Rectangle Smash** is an intense, high-octane 2D top-down arena shooter built from the ground up in **C++** using the **SFML 2.6** framework. It blends classic arcade "bullet-hell" action with modern roguelite progression, procedural effects, and deep ship customization.
 
-<p align="center">
-  <img src="assests/github/Screenshot%202026-05-24%20032038.png" width="80%" alt="Main Menu" />
-</p>
+![Main Menu](assests/github/Screenshot_Menu.png)
 
 ---
 
@@ -29,10 +27,8 @@
 
 ### 💀 ELITE BOSS ENCOUNTERS
 
-<p align="center">
-  <img src="assests/github/Screenshot%202026-05-24%20032134.png" width="48%" alt="Boss 1" />
-  <img src="assests/github/Screenshot%202026-05-24%20032214.png" width="48%" alt="Boss 2" />
-</p>
+![Boss 1](assests/github/Screenshot_Boss1.png)
+![Boss 2](assests/github/Screenshot_Boss2.png)
 
 *   **Boss 1 (The Rectangle Overlord)**: A 2-phase tactical fight featuring radial bursts, teleporting minions, and a screen-tearing Mega-Beam.
 *   **Boss 2 (Surt - The Geometry God)**: An epic 6-stage evolving encounter. Surt changes forms, patterns, and mechanics as you chip away at its health, culminating in a high-speed "Rage Mode" revival.
