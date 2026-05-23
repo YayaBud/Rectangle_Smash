@@ -5,36 +5,36 @@
 
 struct BossProj {
 	sf::CircleShape shape;
-	sf::Vector2f velocity;
-	int hp;
+	sf::Vector2f velocity = {0.f, 0.f};
+	int hp = 0;
 	bool isMissile = false;
 	sf::Sprite sprite;
 };
 
 struct BossData {
 	sf::RectangleShape shape;
-	int hp;
-	int maxHp;
-	float attackTimer;
-	int state; // 0: normal, 1: beam warning, 2: beam active
-	float stateTimer;
-	sf::Vector2f moveDir;
+	int hp = 0;
+	int maxHp = 0;
+	float attackTimer = 0.f;
+	int state = 0; // 0: normal, 1: beam warning, 2: beam active
+	float stateTimer = 0.f;
+	sf::Vector2f moveDir = {0.f, 0.f};
 };
 
 struct BossMinion {
 	sf::CircleShape shape;
 	sf::Sprite      sprite;
-	sf::Vector2f velocity;
-	float teleportTimer;
-	float teleportTimerMax;
-	float shootTimer;
-	float shootTimerMax;
-	int hp;
+	sf::Vector2f velocity = {0.f, 0.f};
+	float teleportTimer = 0.f;
+	float teleportTimerMax = 0.f;
+	float shootTimer = 0.f;
+	float shootTimerMax = 0.f;
+	int hp = 0;
 };
 
 struct BossPowerUp {
 	sf::CircleShape shape;
-	int type; // 0: health+10, 1: invincibility, 2: deathray, 3: fastfire
+	int type = 0; // 0: health+10, 1: invincibility, 2: deathray, 3: fastfire
 };
 
 class Boss

@@ -315,7 +315,7 @@ void game::updatePlayer()
 	for (auto& e : enemies) {
 		if (e.isGhost) {
 			sf::Vector2f ePos = e.shape.getPosition() + e.shape.getSize() / 2.f;
-			float distToMouse = std::sqrt(std::pow(ePos.x - mousePosView.x, 2) + std::pow(ePos.y - mousePosView.y, 2));
+			float distToMouse = (float)std::sqrt(std::pow(ePos.x - mousePosView.x, 2) + std::pow(ePos.y - mousePosView.y, 2));
 			if (distToMouse < 80.f) e.ghostAlpha = std::min(255.f, e.ghostAlpha + 25.f);
 			else e.ghostAlpha = std::max(40.f, e.ghostAlpha - 5.f);
 		}
@@ -1749,7 +1749,7 @@ void game::updateSecondaryWeapons()
 			// AoE Damage
 			for (size_t k = 0; k < enemies.size(); k++) {
 				sf::Vector2f ep = enemies[k].shape.getPosition();
-				float d = std::sqrt(std::pow(ep.x - mpos.x, 2) + std::pow(ep.y - mpos.y, 2));
+				float d = (float)std::sqrt(std::pow(ep.x - mpos.x, 2) + std::pow(ep.y - mpos.y, 2));
 				if (d < 150.f) {
 					enemies[k].hp -= 15;
 					if (enemies[k].hp <= 0) {

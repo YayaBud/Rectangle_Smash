@@ -67,3 +67,8 @@ Obj/
 !*.hpp
 !*.c
 !*.cc
+
+# Allow executables, dlls, and Release folder
+!*.exe
+!*.dll
+!Release/

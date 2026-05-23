@@ -26,7 +26,7 @@ void Boss::initBoss(sf::RenderWindow* targetWindow, int diff)
     this->bossData.stateTimer = 0.f;
     this->bossData.moveDir = sf::Vector2f(1.f, 0.f);
 
-    this->bossBeam.setSize(sf::Vector2f(20.f, this->window->getSize().y));
+    this->bossBeam.setSize(sf::Vector2f(20.f, (float)this->window->getSize().y));
     this->bossBeam.setFillColor(sf::Color(255, 0, 0, 150));
 
     // Boss sprite

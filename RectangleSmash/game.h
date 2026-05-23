@@ -56,8 +56,8 @@ constexpr int MAX_LASER_SOUNDS = 8;
 
 // Explosion spritesheet constants
 constexpr int   EXPL_FRAMES = 8;
-constexpr float EXPL_FRAME_W = 64.f;
-constexpr float EXPL_FRAME_H = 64.f;
+constexpr int   EXPL_FRAME_W = 64;
+constexpr int   EXPL_FRAME_H = 64;
 
 // ─────────────────────────────────────────────
 //  SHARED DATA STRUCTURES

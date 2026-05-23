@@ -136,6 +136,38 @@ Assets (textures, fonts) must be present in `RectangleSmash/` relative to the ex
 
 ---
 
+## RUNNING THE EXECUTABLE STANDALONE
+
+If you have downloaded or built the executable (`Rectangle Smash.exe`) and want to run it independently or share it with others, you must bundle it with its required dependencies:
+
+1. Create a new folder (e.g., `RectangleSmash_Game`).
+2. Place `Rectangle Smash.exe` inside this folder.
+3. Copy the required **Release** SFML DLLs from the project folder into your new folder:
+   - `openal32.dll`
+   - `sfml-audio-2.dll`
+   - `sfml-graphics-2.dll`
+   - `sfml-network-2.dll`
+   - `sfml-system-2.dll`
+   - `sfml-window-2.dll`
+4. Copy the `assests/` and `fonts/` folders into your new folder.
+
+Your final folder structure should look like this:
+```text
+RectangleSmash_Game/
+├── assests/
+├── fonts/
+├── openal32.dll
+├── Rectangle Smash.exe
+├── sfml-audio-2.dll
+├── sfml-graphics-2.dll
+├── sfml-network-2.dll
+├── sfml-system-2.dll
+└── sfml-window-2.dll
+```
+Double-click `Rectangle Smash.exe` to play!
+
+---
+
 ## PROJECT STRUCTURE
 
 ```
