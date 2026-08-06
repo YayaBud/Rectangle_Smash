@@ -9,6 +9,7 @@ struct BossProj {
 	int hp = 0;
 	bool isMissile = false;
 	sf::Sprite sprite;
+	bool grazed = false;   // graze mechanic: award once per projectile
 };
 
 struct BossData {

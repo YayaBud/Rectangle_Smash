@@ -26,6 +26,16 @@ void game::pollevent()
 				this->state = GameState::MENU;
 				debugLog("State changed: MENU from PAUSED");
 			}
+			// Bomb + Ultimate are edge-triggered here rather than polled with
+			// isKeyPressed in their update functions: polling meant holding the
+			// key re-fired the instant the cooldown lapsed.
+			if (this->state == GameState::PLAYING && !this->EndGame) {
+				if (ev.key.code == sf::Keyboard::LShift || ev.key.code == sf::Keyboard::RShift ||
+					ev.key.code == sf::Keyboard::F2)
+					triggerBomb();
+				if (ev.key.code == sf::Keyboard::Q || ev.key.code == sf::Keyboard::E)
+					triggerUltimate();
+			}
 			// Space = Dash
 			if (ev.key.code == sf::Keyboard::Space &&
 				!isDashing && dashCooldown <= 0.f &&
@@ -232,6 +242,12 @@ void game::update()
 		updateDrones();
 		updateLasers();
 		updateEnemyBullets();
+		// These three were implemented but never called, so the ultimate meter,
+		// graze streak and combo pop did nothing all game.
+		updateGraze();
+		updateUltimate();
+		updateComboAnnouncer();
+		updateShockwaves();
 		updateParticles();
 		updateParticleTrails();
 		updateScorePopups();
@@ -338,7 +354,8 @@ void game::render()
 		else if (isBoss2Stage) { renderBoss2(*window); }
 		renderSpawnWarnings(*window); renderPowerUps(*window);
 		renderLasers(*window); renderSecondaryWeapons(*window); renderEnemyBullets(*window);
-		renderParticles(*window); renderDashTrail(*window);
+		renderParticles(*window); renderShockwaves(*window); renderDashTrail(*window);
+		renderDrones(*window);
 		renderPlayer(*window); renderHUD(*window); renderText(*window);
 		renderScorePopups(*window);
 
@@ -361,7 +378,8 @@ void game::render()
 		else if (isBossStage) { bossEntity.render(*window); bossEntity.renderPhaseAnnouncement(*window, font); }
 		else if (isBoss2Stage) { renderBoss2(*window); }
 		renderPowerUps(*window); renderLasers(*window); renderSecondaryWeapons(*window); renderEnemyBullets(*window);
-		renderParticles(*window); renderDashTrail(*window); renderPlayer(*window);
+		renderParticles(*window); renderShockwaves(*window);
+		renderDashTrail(*window); renderDrones(*window); renderPlayer(*window);
 		renderExplosions(*window);
 
 		// FIX: white flash on boss death — computed directly from timer, no new member needed

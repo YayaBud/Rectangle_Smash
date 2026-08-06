@@ -208,12 +208,14 @@ void game::triggerKillBanner(int combo)
 void game::gainPoints(int base, sf::Vector2f pos)
 {
 	int mult = std::max(1, comboCount);
-	int total = base * mult;
+	int total = (int)(base * mult * grazeMultiplier);
 	points += total;
 	addScorePopup(pos, total);
 	comboCount++;
 	comboTimer = comboTimerMax + std::min(18.f, (float)comboCount * 1.2f);
 	triggerKillBanner(comboCount);
+	comboAnnouncerTimer = 22.f;          // drives the combo counter's scale pop
+	addUltimateCharge(4.f + comboCount * 0.4f);
 }
 
 //  PLAYER TAKE DAMAGE
@@ -251,6 +253,11 @@ void game::playerTakeDamage(int amount)
 	screenShake = 14.f + amount * 1.5f;
 	hitStopTimer = 5.f;
 	playerDamageFlashTimer = 12.f;
+
+	// Getting hit costs the graze streak but pays a little ultimate charge —
+	// a bad run still builds toward the comeback button.
+	grazeCount = 0; grazeTimer = 0.f; grazeMultiplier = 1.f;
+	addUltimateCharge(8.f * amount);
 }
 
 //  EXPLOSION PARTICLES

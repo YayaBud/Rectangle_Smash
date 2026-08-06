@@ -72,6 +72,19 @@ struct Laser {
 struct EnemyBullet {
     sf::CircleShape shape;
     sf::Vector2f    velocity;
+    bool            grazed = false;   // one graze award per bullet, ever
+};
+
+// Expanding ring. Bombs, ultimates and boss deaths all read as "something big
+// happened here" instead of an unexplained screen shake.
+struct Shockwave {
+    sf::Vector2f pos;
+    float        radius = 0.f;
+    float        maxRadius = 600.f;
+    float        thickness = 18.f;
+    float        lifetime = 0.f;
+    float        maxLifetime = 34.f;
+    sf::Color    color = sf::Color::White;
 };
 
 struct Particle {
@@ -422,7 +435,10 @@ private:
     float ultimateCharge;
     float ultimateChargeMax;
     float ultimateActiveTimer;
+    float ultimateActiveMax;
     bool  ultimateActive;
+    bool  ultimateReadyAnnounced;   // so the "READY" sting fires once, not per frame
+    float ultimateFlashTimer;
 
     // ── Endless loop ──────────────────────────
     int   loopCount;
@@ -472,6 +488,22 @@ private:
 
     sf::SoundBuffer destructionBuf;
     sf::Sound       destructionSound;
+
+    sf::SoundBuffer bombBuf;
+    sf::Sound       bombSound;
+
+    sf::SoundBuffer ultReadyBuf;
+    sf::Sound       ultReadySound;
+
+    sf::SoundBuffer ultFireBuf;
+    sf::Sound       ultFireSound;
+
+    // Graze ticks fire in fast bursts, so they need a small pool or each one
+    // cuts off the last and the streak sounds like a single click.
+    static const int MAX_GRAZE_SOUNDS = 4;
+    sf::SoundBuffer grazeBuf;
+    sf::Sound       grazeSounds[MAX_GRAZE_SOUNDS];
+    int             currentGrazeSoundIndex;
 
     sf::Music bgMusic;
     sf::Music bossBgMusic;
@@ -523,6 +555,11 @@ private:
     int               perkChoices[3];
     std::vector<int>  activePerkIds;
 
+    // ── Batched geometry ─────────────────────
+    // Scratch buffer reused every frame so particles / lasers / bullets / stars
+    // each cost ONE draw call instead of one (or three) per entity.
+    sf::VertexArray            batch;
+
     // ── Game objects ──────────────────────────
     sf::ConvexShape            player;
     std::vector<EnemyData>     enemies;
@@ -542,6 +579,7 @@ private:
     std::vector<HomingMissile> missiles;
     std::vector<Drone>         drones;
     std::vector<DemoLaser>     demoLasers;
+    std::vector<Shockwave>     shockwaves;
 
     // ── Init functions ────────────────────────
     void initvariable();
@@ -585,6 +623,10 @@ private:
     void addExplosionParticles(sf::Vector2f pos, sf::Color color, int count);
     void spawnExplosion(float x, float y, float scale);
     void triggerBomb();
+    void triggerUltimate();
+    void addUltimateCharge(float amount);
+    void spawnShockwave(sf::Vector2f pos, float maxRadius, sf::Color color, float life = 34.f);
+    void grantDrone();
     void generatePerkChoices();
 
     // ── Update functions ──────────────────────
@@ -627,6 +669,7 @@ private:
     void updateComboAnnouncer();
     void updateUltimate();
     void updateGraze();
+    void updateShockwaves();
 
     // ── Render functions ──────────────────────
     void renderTransitionFade(sf::RenderTarget& target);
@@ -649,6 +692,8 @@ private:
     void renderSecondaryWeapons(sf::RenderTarget& target);
     void renderEnemyBullets(sf::RenderTarget& target);
     void renderParticles(sf::RenderTarget& target);
+    void renderShockwaves(sf::RenderTarget& target);
+    void renderDrones(sf::RenderTarget& target);
     void renderDashTrail(sf::RenderTarget& target);
     void renderPlayer(sf::RenderTarget& target);
     void renderHUD(sf::RenderTarget& target);

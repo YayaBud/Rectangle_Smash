@@ -2,32 +2,276 @@
 #include "game.h"
 
 //  PROCEDURAL AUDIO HELPERS
+//
+//  The originals were a linear-decay sine and a linear-decay white noise burst.
+//  That is why nothing sounded like the thing it was attached to: real impacts
+//  decay exponentially, have a transient at the front, and carry low-frequency
+//  body. Everything below is built from four ingredients — an exponential
+//  envelope, a one-pole lowpass, a soft clipper, and a sub-oscillator.
+namespace {
+	const int   SR = 44100;
+	const float TAU = 6.2831853f;
+
+	inline float frand() { return (rand() % 65536 - 32768) / 32768.f; }
+
+	// Exponential decay. `curve` higher = snappier.
+	inline float decay(float p, float curve) { return std::exp(-curve * p); }
+
+	// Short fade-in kills the DC click at sample 0.
+	inline float attack(int i, int atkSamples) {
+		return atkSamples <= 0 ? 1.f : std::min(1.f, (float)i / (float)atkSamples);
+	}
+
+	// Soft clip — adds harmonics and stops loud sounds from crackling.
+	inline float softClip(float v) {
+		return std::tanh(v * 1.4f);
+	}
+
+	inline sf::Int16 toSample(float v) {
+		v = std::max(-1.f, std::min(1.f, v));
+		return (sf::Int16)(v * 32000.f);
+	}
+
+	inline void loadMono(sf::SoundBuffer& buf, std::vector<sf::Int16>& data) {
+		buf.loadFromSamples(data.data(), data.size(), 1, SR);
+	}
+
+	// One-pole lowpass. `a` in (0,1]; smaller = darker. Turns hissy white noise
+	// into something with weight behind it.
+	struct LowPass {
+		float a, z = 0.f;
+		explicit LowPass(float alpha) : a(alpha) {}
+		float operator()(float x) { z += a * (x - z); return z; }
+	};
+}
+
 static void makeTone(sf::SoundBuffer& buf, float freqHz, float durSec,
 	float volScale = 1.f, bool sweep = false, float freqEnd = 0.f)
 {
-	const int sr = 44100;
-	int n = (int)(sr * durSec);
+	int n = (int)(SR * durSec);
 	std::vector<sf::Int16> data(n);
+	float phase = 0.f;
 	for (int i = 0; i < n; i++) {
-		float t = (float)i / sr;
 		float p = (float)i / n;
 		float freq = sweep ? (freqHz + (freqEnd - freqHz) * p) : freqHz;
-		data[i] = (sf::Int16)((1.f - p) * volScale * 25000.f * std::sin(2.f * 3.14159f * freq * t));
+		// Integrating phase instead of sin(2*pi*f*t) keeps a swept tone
+		// continuous — the old form phase-jumps and buzzes as f changes.
+		phase += TAU * freq / SR;
+		float env = decay(p, 4.f) * attack(i, 64);
+		// A little second harmonic so it reads as an instrument, not a test tone.
+		float s = std::sin(phase) + 0.25f * std::sin(phase * 2.f);
+		data[i] = toSample(env * volScale * 0.8f * softClip(s));
 	}
-	buf.loadFromSamples(data.data(), data.size(), 1, sr);
+	loadMono(buf, data);
 }
 
 static void makeNoise(sf::SoundBuffer& buf, float durSec, float volScale = 1.f)
 {
-	const int sr = 44100;
-	int n = (int)(sr * durSec);
+	int n = (int)(SR * durSec);
 	std::vector<sf::Int16> data(n);
+	LowPass lp(0.14f);
+	float subPhase = 0.f;
 	for (int i = 0; i < n; i++) {
-		float amp = (1.f - (float)i / n) * volScale;
-		float noise = (rand() % 65536 - 32768) / 32768.f;
-		data[i] = (sf::Int16)(amp * 20000.f * noise);
+		float p = (float)i / n;
+		// Body: filtered noise, fast decay
+		float body = lp(frand()) * 3.2f * decay(p, 5.f);
+		// Sub: pitch dropping out from under it — this is the "boom"
+		float subFreq = 110.f * (1.f - p * 0.72f);
+		subPhase += TAU * subFreq / SR;
+		float sub = std::sin(subPhase) * decay(p, 3.2f) * 0.7f;
+		// Transient crack in the first few ms
+		float crack = (p < 0.012f) ? frand() * (1.f - p / 0.012f) * 0.8f : 0.f;
+		data[i] = toSample(softClip((body + sub + crack) * volScale) * attack(i, 24));
 	}
-	buf.loadFromSamples(data.data(), data.size(), 1, sr);
+	loadMono(buf, data);
+}
+
+// Sharp, dry hit. Replaces an 80 Hz sine, which was a hum with no transient.
+static void makeImpact(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 0.09f);
+	std::vector<sf::Int16> data(n);
+	LowPass lp(0.35f);
+	float phase = 0.f;
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+		// Pitch drops 260 -> 70 Hz across 90ms: the classic "thock"
+		float freq = 260.f * std::exp(-3.4f * p) + 70.f;
+		phase += TAU * freq / SR;
+		float tonal = std::sin(phase) * decay(p, 7.f);
+		float click = lp(frand()) * decay(p, 26.f) * 2.4f;
+		data[i] = toSample(softClip((tonal + click) * 0.95f) * attack(i, 12));
+	}
+	loadMono(buf, data);
+}
+
+// Rising major triad. Reads as "you gained something" instead of a bleep.
+static void makePickup(sf::SoundBuffer& buf)
+{
+	const float notes[3] = { 523.25f, 659.25f, 783.99f };  // C5 E5 G5
+	int noteLen = (int)(SR * 0.055f);
+	int n = noteLen * 3 + (int)(SR * 0.10f);              // tail past the last note
+	std::vector<sf::Int16> data(n, 0);
+
+	for (int k = 0; k < 3; k++) {
+		float phase = 0.f;
+		int start = k * noteLen;
+		for (int i = start; i < n; i++) {
+			float p = (float)(i - start) / (float)(n - start);
+			phase += TAU * notes[k] / SR;
+			// Triangle-ish: fundamental + soft odd harmonic
+			float s = std::sin(phase) + 0.16f * std::sin(phase * 3.f);
+			float v = s * decay(p, 6.f) * 0.34f * attack(i - start, 48);
+			data[i] = toSample((float)data[i] / 32000.f + v);
+		}
+	}
+	loadMono(buf, data);
+}
+
+// Air moving past you: filtered noise with a bandpass-ish sweep.
+static void makeWhoosh(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 0.22f);
+	std::vector<sf::Int16> data(n);
+	LowPass lp(0.3f);
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+		// Filter opens then closes — that arc is what sells it as a movement,
+		// not a static hiss.
+		lp.a = 0.05f + 0.55f * std::sin(3.14159f * p);
+		float env = std::sin(3.14159f * std::pow(p, 0.7f));
+		data[i] = toSample(softClip(lp(frand()) * 2.6f * env * 0.8f));
+	}
+	loadMono(buf, data);
+}
+
+// Big, slow, low. The bomb is the loudest thing in the game and needs to
+// occupy a different frequency range from every other effect or it just reads
+// as "another explosion".
+static void makeBoom(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 1.1f);
+	std::vector<sf::Int16> data(n);
+	LowPass rumble(0.045f);
+	LowPass crackLp(0.5f);
+	float subPhase = 0.f, subPhase2 = 0.f;
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+
+		float f1 = 130.f * std::exp(-3.0f * p) + 26.f;
+		float f2 = f1 * 1.5f;
+		subPhase += TAU * f1 / SR;
+		subPhase2 += TAU * f2 / SR;
+
+		float sub = (std::sin(subPhase) * 0.9f + std::sin(subPhase2) * 0.35f) * decay(p, 2.4f);
+		float body = rumble(frand()) * 5.0f * decay(p, 3.0f);
+		float crack = (p < 0.02f) ? crackLp(frand()) * (1.f - p / 0.02f) * 3.0f : 0.f;
+
+		data[i] = toSample(softClip((sub + body + crack) * 1.15f) * attack(i, 16));
+	}
+	loadMono(buf, data);
+}
+
+// Two-note bell, perfect fifth. Cuts through combat without being aggressive —
+// it is good news, not a warning.
+static void makeChime(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 0.85f);
+	std::vector<sf::Int16> data(n, 0);
+	const float roots[2] = { 784.f, 1174.7f };   // G5, D6
+	const int   offsets[2] = { 0, (int)(SR * 0.09f) };
+
+	for (int k = 0; k < 2; k++) {
+		float ph = 0.f, ph2 = 0.f;
+		for (int i = offsets[k]; i < n; i++) {
+			float p = (float)(i - offsets[k]) / (float)(n - offsets[k]);
+			ph += TAU * roots[k] / SR;
+			ph2 += TAU * roots[k] * 2.76f / SR;      // inharmonic partial = bell
+			float v = (std::sin(ph) * 0.75f + std::sin(ph2) * 0.18f)
+				* decay(p, 4.2f) * 0.4f * attack(i - offsets[k], 96);
+			data[i] = toSample((float)data[i] / 32000.f + v);
+		}
+	}
+	loadMono(buf, data);
+}
+
+// Charge-up sweep that lands on a low impact — the "unleash" sound.
+static void makeUltFire(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 0.8f);
+	int impactAt = (int)(SR * 0.34f);
+	std::vector<sf::Int16> data(n);
+	LowPass lp(0.3f);
+	float ph = 0.f, subPh = 0.f;
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+		float v = 0.f;
+
+		if (i < impactAt) {
+			// Rising sweep, gets brighter and louder as it climbs
+			float rp = (float)i / impactAt;
+			float freq = 180.f + 1500.f * rp * rp;
+			ph += TAU * freq / SR;
+			v += (std::sin(ph) * 0.5f + frand() * 0.18f * rp) * (0.2f + 0.8f * rp);
+		}
+		else {
+			// Impact + tail
+			float ip = (float)(i - impactAt) / (float)(n - impactAt);
+			float subFreq = 190.f * std::exp(-3.6f * ip) + 44.f;
+			subPh += TAU * subFreq / SR;
+			v += std::sin(subPh) * decay(ip, 3.0f) * 1.1f;
+			v += lp(frand()) * decay(ip, 6.0f) * 2.2f;
+		}
+		data[i] = toSample(softClip(v) * attack(i, 32) * (1.f - 0.15f * p));
+	}
+	loadMono(buf, data);
+}
+
+// Sustained beam. Detuned saw-ish stack with vibrato and a sizzle layer on top,
+// held flat through the middle so it can play under a long attack without
+// sounding like a one-shot that ran out.
+static void makeBeam(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 1.5f);
+	std::vector<sf::Int16> data(n);
+	LowPass sizzle(0.55f);
+	float p1 = 0.f, p2 = 0.f, p3 = 0.f;
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+		float t = (float)i / SR;
+
+		// Slow vibrato so the tone breathes instead of sitting dead still
+		float vib = 1.f + 0.012f * std::sin(TAU * 5.5f * t);
+		float f = 116.f * vib;
+
+		p1 += TAU * f / SR;
+		p2 += TAU * f * 2.01f / SR;   // slight detune = beating = thickness
+		p3 += TAU * f * 3.02f / SR;
+
+		float core = std::sin(p1) * 0.6f + std::sin(p2) * 0.3f + std::sin(p3) * 0.18f;
+		float air = sizzle(frand()) * 0.5f;
+
+		// Fast attack, long plateau, short release
+		float env = std::min(1.f, p / 0.04f) * std::min(1.f, (1.f - p) / 0.12f);
+
+		data[i] = toSample(softClip((core + air) * 0.85f) * env);
+	}
+	loadMono(buf, data);
+}
+
+// 22ms tick. Deliberately tiny and high — grazing fires many times per second
+// and anything longer turns into a drone.
+static void makeTick(sf::SoundBuffer& buf)
+{
+	int n = (int)(SR * 0.022f);
+	std::vector<sf::Int16> data(n);
+	float ph = 0.f;
+	for (int i = 0; i < n; i++) {
+		float p = (float)i / n;
+		ph += TAU * 1650.f / SR;
+		data[i] = toSample(std::sin(ph) * decay(p, 12.f) * 0.55f * attack(i, 8));
+	}
+	loadMono(buf, data);
 }
 
 static void makeBgMusic(sf::SoundBuffer& buf)
@@ -216,7 +460,7 @@ void game::initvariable()
 	// BOMB ABILITY
 	this->bombCount = 3;
 	this->bombCooldownTimer = 0.f;
-	this->bombCooldownMax = 60.f;
+	this->bombCooldownMax = 120.f;   // 1s lockout so a double-tap can't dump two
 
 	// COMPANION DRONES
 	this->droneLevel = 0;
@@ -226,10 +470,16 @@ void game::initvariable()
 	this->comboAnnouncerScale = 1.f;
 
 	// SHIP ULTIMATE
+	// 1000 was unreachable — nothing ever added charge, and at the rates below
+	// it would have taken most of a run. 300 lands roughly one ultimate per wave
+	// for a player who grazes.
 	this->ultimateCharge = 0.f;
-	this->ultimateChargeMax = 1000.f;
+	this->ultimateChargeMax = 300.f;
 	this->ultimateActiveTimer = 0.f;
+	this->ultimateActiveMax = 360.f;   // 3s at 120 Hz
 	this->ultimateActive = false;
+	this->ultimateReadyAnnounced = false;
+	this->ultimateFlashTimer = 0.f;
 
 	// ENDLESS LOOP
 	this->loopCount = 0;
@@ -253,10 +503,13 @@ void game::initwindow()
 	sf::ContextSettings settings;
 	settings.antialiasingLevel = 8;
 	this->window = new sf::RenderWindow(this->dimensions, "Rectangle Smash", sf::Style::Default, settings);
-	this->window->setFramerateLimit(120);
+	// Pacing lives in main()'s fixed-timestep loop. A framerate limit here would
+	// fight it (SFML's limiter is a sleep, which jitters); vsync just blocks on
+	// the display and lets the accumulator do the rest.
+	this->window->setVerticalSyncEnabled(true);
 	this->window->setKeyRepeatEnabled(false);
 	this->window->setMouseCursorVisible(false); // D5: hide system cursor; we draw our own crosshair
-	debugLog("Created window 1920x1080 at 120 FPS");
+	debugLog("Created window 1920x1080, vsync on, 120 Hz fixed simulation");
 }
 
 //  INIT PLAYER + ALL TEXTURES
@@ -682,59 +935,71 @@ void game::initAudio()
 		this->laserSounds[i].setVolume(45.f);
 	}
 
-	// boss beam
+	// boss beam — boss_lazerbeam.ogg has never existed in assests/music, so this
+	// load always failed and the beam attack was silent. Synthesized instead.
 	const char* bossBeamPath = "assests/music/boss_lazerbeam.ogg";
 	bool bossBeamLoaded = this->bossBeamBuf.loadFromFile(bossBeamPath);
-	logSoundBufferLoad("boss beam sound", bossBeamPath, bossBeamLoaded, this->bossBeamBuf);
-	if (!bossBeamLoaded)
-		std::cout << "Failed to load boss_lazerbeam.ogg\n";
+	if (!bossBeamLoaded) {
+		makeBeam(this->bossBeamBuf);
+		debugLog("Boss beam sound: generated (no boss_lazerbeam.ogg on disk)");
+	}
+	else logSoundBufferLoad("boss beam sound", bossBeamPath, bossBeamLoaded, this->bossBeamBuf);
 	this->bossBeamSound.setBuffer(this->bossBeamBuf);
 	this->bossBeamSound.setVolume(65.f);
 
-	// overheat alarm
-	const char* overheatPath = "assests/music/overheat.ogg";
+	// overheat alarm — the file on disk is overheat.mp3; this asked for .ogg,
+	// so the overheat warning never made a sound.
+	const char* overheatPath = "assests/music/overheat.mp3";
 	bool overheatLoaded = this->overheatBuf.loadFromFile(overheatPath);
 	logSoundBufferLoad("overheat sound", overheatPath, overheatLoaded, this->overheatBuf);
 	if (!overheatLoaded)
-		std::cout << "Failed to load overheat.ogg\n";
+		std::cout << "Failed to load overheat.mp3\n";
 	this->overheatSound.setBuffer(this->overheatBuf);
 	this->overheatSound.setVolume(55.f);
 
 	// generated sfx (no files for these)
-	makeNoise(this->explosionBuf, 0.20f, 0.75f);
+	// Longer than the old 0.2s burst: an explosion that stops dead sounds like
+	// a click. The tail is what gives it size.
+	makeNoise(this->explosionBuf, 0.55f, 0.85f);
 	this->explosionSound.setBuffer(this->explosionBuf);
-	this->explosionSound.setVolume(40.f);
+	this->explosionSound.setVolume(38.f);
 	debugLog("Generated explosion sound (" + std::to_string(explosionBuf.getSampleCount()) + " samples)");
 
-	makeTone(this->powerUpBuf, 300.f, 0.15f, 0.5f, true, 700.f);
+	makePickup(this->powerUpBuf);
 	this->powerUpSound.setBuffer(this->powerUpBuf);
 	this->powerUpSound.setVolume(35.f);
 	debugLog("Generated power-up sound (" + std::to_string(powerUpBuf.getSampleCount()) + " samples)");
 
-	makeTone(this->hitBuf, 80.f, 0.06f, 0.9f);
+	makeImpact(this->hitBuf);
 	this->hitSound.setBuffer(this->hitBuf);
 	this->hitSound.setVolume(50.f);
 	debugLog("Generated hit sound (" + std::to_string(hitBuf.getSampleCount()) + " samples)");
 
-	// dash whoosh
-	{
-		const int sr = 44100;
-		int n = (int)(sr * 0.1f);
-		std::vector<sf::Int16> data(n);
-		for (int i = 0; i < n; i++) {
-			float p = (float)i / n;
-			float env = std::sin(3.14159f * p);
-			float freq = 200.f + 400.f * p;
-			float t = (float)i / sr;
-			float tone = std::sin(2.f * 3.14159f * freq * t);
-			float noise = (rand() % 65536 - 32768) / 32768.f;
-			data[i] = (sf::Int16)(env * 12000.f * (tone * 0.6f + noise * 0.4f));
-		}
-		this->dashBuf.loadFromSamples(data.data(), data.size(), 1, sr);
-		this->dashSound.setBuffer(this->dashBuf);
-		this->dashSound.setVolume(40.f);
-		debugLog("Generated dash sound (" + std::to_string(dashBuf.getSampleCount()) + " samples)");
+	makeWhoosh(this->dashBuf);
+	this->dashSound.setBuffer(this->dashBuf);
+	this->dashSound.setVolume(34.f);
+	debugLog("Generated dash sound (" + std::to_string(dashBuf.getSampleCount()) + " samples)");
+
+	// ── Ability sounds ───────────────────────────────────────────────
+	makeBoom(this->bombBuf);
+	this->bombSound.setBuffer(this->bombBuf);
+	this->bombSound.setVolume(80.f);
+
+	makeChime(this->ultReadyBuf);
+	this->ultReadySound.setBuffer(this->ultReadyBuf);
+	this->ultReadySound.setVolume(50.f);
+
+	makeUltFire(this->ultFireBuf);
+	this->ultFireSound.setBuffer(this->ultFireBuf);
+	this->ultFireSound.setVolume(70.f);
+
+	makeTick(this->grazeBuf);
+	this->currentGrazeSoundIndex = 0;
+	for (int i = 0; i < MAX_GRAZE_SOUNDS; i++) {
+		this->grazeSounds[i].setBuffer(this->grazeBuf);
+		this->grazeSounds[i].setVolume(26.f);
 	}
+	debugLog("Generated ability sounds (bomb / ult ready / ult fire / graze)");
 
 	// wave clear jingle
 	{

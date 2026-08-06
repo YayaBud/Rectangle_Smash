@@ -1,35 +1,96 @@
 // game_render.cpp all render functions
 #include "game.h"
 
+// One drop shadow, one face. The old version drew the same string 9-10 times
+// (4-way glow + per-pixel extrusion), which is both the single biggest source of
+// draw calls in the HUD and the reason every label looked like a default neon
+// preset. Two draws reads sharper and costs 1/5th.
 static void draw3DText(sf::RenderTarget& target, sf::Text text) {
-    sf::Color originalColor = text.getFillColor();
-    sf::Vector2f basePos = text.getPosition();
+    const sf::Color face = text.getFillColor();
+    const sf::Vector2f basePos = text.getPosition();
 
-    // Glow (Draw 4 times around)
-    sf::Color glowColor = originalColor;
-    glowColor.a = 50;
-    text.setFillColor(glowColor);
-    text.setPosition(basePos.x + 1, basePos.y + 1); target.draw(text);
-    text.setPosition(basePos.x - 1, basePos.y - 1); target.draw(text);
-    text.setPosition(basePos.x + 1, basePos.y - 1); target.draw(text);
-    text.setPosition(basePos.x - 1, basePos.y + 1); target.draw(text);
+    text.setFillColor(sf::Color(0, 0, 0, (sf::Uint8)(face.a * 0.65f)));
+    text.setPosition(basePos.x + 2.f, basePos.y + 2.f);
+    target.draw(text);
 
-    // 3D Extrusion
-    sf::Color shadowColor(0, originalColor.g / 2, originalColor.b / 2, 255);
-    if (originalColor == sf::Color::White || originalColor == sf::Color::Transparent) {
-        shadowColor = sf::Color(100, 100, 100);
-    }
-    text.setFillColor(shadowColor);
-    int offset = std::max(1, (int)(text.getCharacterSize() / 15));
-    for(int i = offset; i > 0; --i) {
-        text.setPosition(basePos.x + i, basePos.y + i);
-        target.draw(text);
-    }
-
-    // Top Face
-    text.setFillColor(originalColor);
+    text.setFillColor(face);
     text.setPosition(basePos);
     target.draw(text);
+}
+
+// ─────────────────────────────────────────────
+//  BATCHING HELPERS
+//  Everything below appends triangles to a shared sf::VertexArray so a whole
+//  entity list collapses into a single draw() call.
+// ─────────────────────────────────────────────
+namespace {
+    // Appends the quad a-b-c-d (wound in order) as two triangles.
+    inline void pushQuad(sf::VertexArray& va,
+        sf::Vector2f a, sf::Vector2f b, sf::Vector2f c, sf::Vector2f d,
+        const sf::Color& col)
+    {
+        va.append(sf::Vertex(a, col));
+        va.append(sf::Vertex(b, col));
+        va.append(sf::Vertex(c, col));
+        va.append(sf::Vertex(a, col));
+        va.append(sf::Vertex(c, col));
+        va.append(sf::Vertex(d, col));
+    }
+
+    // Axis-aligned rect (particles, stars-as-squares).
+    inline void pushRect(sf::VertexArray& va, sf::Vector2f pos, sf::Vector2f size, const sf::Color& col)
+    {
+        pushQuad(va, pos,
+            sf::Vector2f(pos.x + size.x, pos.y),
+            sf::Vector2f(pos.x + size.x, pos.y + size.y),
+            sf::Vector2f(pos.x, pos.y + size.y), col);
+    }
+
+    // Rect carried through a shape's own transform — handles rotation/origin,
+    // so a rotated laser batches identically to how SFML would have drawn it.
+    inline void pushShapeRect(sf::VertexArray& va, const sf::Transform& xf,
+        sf::Vector2f size, const sf::Color& col)
+    {
+        pushQuad(va,
+            xf.transformPoint(0.f, 0.f),
+            xf.transformPoint(size.x, 0.f),
+            xf.transformPoint(size.x, size.y),
+            xf.transformPoint(0.f, size.y), col);
+    }
+
+    // Triangle fan around a centre, emitted as discrete triangles.
+    // 10 segments is indistinguishable from SFML's 30-point circle at bullet size.
+    inline void pushDisc(sf::VertexArray& va, sf::Vector2f centre, float radius,
+        const sf::Color& col, int segments = 10)
+    {
+        const float TAU = 6.2831853f;
+        sf::Vector2f prev(centre.x + radius, centre.y);
+        for (int i = 1; i <= segments; i++) {
+            float a = TAU * (float)i / (float)segments;
+            sf::Vector2f next(centre.x + std::cos(a) * radius, centre.y + std::sin(a) * radius);
+            va.append(sf::Vertex(centre, col));
+            va.append(sf::Vertex(prev, col));
+            va.append(sf::Vertex(next, col));
+            prev = next;
+        }
+    }
+
+    // Hollow ring — used by shockwaves and graze pulses.
+    inline void pushRing(sf::VertexArray& va, sf::Vector2f centre, float radius,
+        float thickness, const sf::Color& col, int segments = 40)
+    {
+        const float TAU = 6.2831853f;
+        float inner = std::max(0.f, radius - thickness);
+        for (int i = 0; i < segments; i++) {
+            float a0 = TAU * (float)i / (float)segments;
+            float a1 = TAU * (float)(i + 1) / (float)segments;
+            sf::Vector2f o0(centre.x + std::cos(a0) * radius, centre.y + std::sin(a0) * radius);
+            sf::Vector2f o1(centre.x + std::cos(a1) * radius, centre.y + std::sin(a1) * radius);
+            sf::Vector2f i0(centre.x + std::cos(a0) * inner, centre.y + std::sin(a0) * inner);
+            sf::Vector2f i1(centre.x + std::cos(a1) * inner, centre.y + std::sin(a1) * inner);
+            pushQuad(va, i0, o0, o1, i1, col);
+        }
+    }
 }
 
 
@@ -65,49 +126,82 @@ namespace {
 		draw3DText(target, text);
 	}
 
+	// ── PALETTE ──────────────────────────────────────────────────────
+	// Four hues with fixed jobs, instead of every element picking its own
+	// saturated neon. Colour carries meaning here: warm = yours, red = threat,
+	// slate = inert chrome.
+	const sf::Color COL_INK(10, 13, 20);       // panel fill
+	const sf::Color COL_CHROME(126, 142, 163); // labels, rules, inert UI
+	const sf::Color COL_MINE(232, 178, 76);    // your resources: ult, bombs
+	const sf::Color COL_READY(74, 200, 180);   // available / cooled down
+	const sf::Color COL_DANGER(226, 82, 74);   // heat, damage, threat
+
 	void drawPanel(sf::RenderTarget& target, sf::Vector2f pos, sf::Vector2f size, sf::Color edge, sf::Uint8 fillAlpha = 90)
 	{
-		sf::RectangleShape shadow(size + sf::Vector2f(14.f, 14.f));
-		shadow.setOrigin((size.x + 14.f) / 2.f, (size.y + 14.f) / 2.f);
-		shadow.setPosition(pos + sf::Vector2f(7.f, 9.f));
-		shadow.setFillColor(sf::Color(0, 0, 0, 125));
-		target.draw(shadow);
-
 		sf::RectangleShape panel(size);
 		panel.setOrigin(size.x / 2.f, size.y / 2.f);
 		panel.setPosition(pos);
-		panel.setFillColor(sf::Color(10, 18, 38, fillAlpha));
-		panel.setOutlineColor(edge);
-		panel.setOutlineThickness(2.f);
+		panel.setFillColor(sf::Color(COL_INK.r, COL_INK.g, COL_INK.b, (sf::Uint8)std::min(235, fillAlpha + 120)));
+		panel.setOutlineColor(sf::Color(edge.r, edge.g, edge.b, 70));
+		panel.setOutlineThickness(1.f);
 		target.draw(panel);
 
-		sf::RectangleShape top(sf::Vector2f(size.x - 18.f, 3.f));
-		top.setOrigin((size.x - 18.f) / 2.f, 1.5f);
-		top.setPosition(pos.x, pos.y - size.y / 2.f + 10.f);
-		top.setFillColor(sf::Color(edge.r, edge.g, edge.b, 180));
-		target.draw(top);
+		// A single hairline at the top edge instead of a glowing bevel. Reads as
+		// a designed frame rather than a default "sci-fi panel" preset.
+		sf::RectangleShape rule(sf::Vector2f(size.x, 2.f));
+		rule.setOrigin(size.x / 2.f, 1.f);
+		rule.setPosition(pos.x, pos.y - size.y / 2.f);
+		rule.setFillColor(sf::Color(edge.r, edge.g, edge.b, 200));
+		target.draw(rule);
 	}
 
 	void drawBar(sf::RenderTarget& target, sf::Vector2f pos, sf::Vector2f size, float ratio, sf::Color fill)
 	{
 		ratio = std::max(0.f, std::min(ratio, 1.f));
+
 		sf::RectangleShape bg(size);
 		bg.setPosition(pos);
-		bg.setFillColor(sf::Color(18, 22, 35, 210));
-		bg.setOutlineColor(sf::Color(110, 130, 160, 130));
-		bg.setOutlineThickness(1.f);
+		bg.setFillColor(sf::Color(0, 0, 0, 170));
 		target.draw(bg);
 
-		sf::RectangleShape glow(sf::Vector2f(size.x * ratio, size.y));
-		glow.setPosition(pos);
-		glow.setFillColor(sf::Color(fill.r, fill.g, fill.b, 65));
-		glow.setScale(1.f, 1.8f);
-		target.draw(glow);
+		if (ratio > 0.f) {
+			sf::RectangleShape fg(sf::Vector2f(size.x * ratio, size.y));
+			fg.setPosition(pos);
+			fg.setFillColor(fill);
+			target.draw(fg);
 
-		sf::RectangleShape fg(sf::Vector2f(size.x * ratio, size.y));
-		fg.setPosition(pos);
-		fg.setFillColor(fill);
-		target.draw(fg);
+			// Bright leading edge — gives the bar a direction of travel, and
+			// makes small changes legible without an animated glow.
+			sf::RectangleShape tip(sf::Vector2f(2.f, size.y));
+			tip.setPosition(pos.x + size.x * ratio - 2.f, pos.y);
+			tip.setFillColor(sf::Color(255, 255, 255, 190));
+			target.draw(tip);
+		}
+
+		sf::RectangleShape frame(size);
+		frame.setPosition(pos);
+		frame.setFillColor(sf::Color::Transparent);
+		frame.setOutlineColor(sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 90));
+		frame.setOutlineThickness(1.f);
+		target.draw(frame);
+	}
+
+	// Discrete charges (bombs). Pips beat a number for anything under ~6:
+	// countable at a glance, no reading required.
+	void drawPips(sf::RenderTarget& target, sf::Vector2f pos, int count, int maxCount, sf::Color fill)
+	{
+		const float w = 16.f, h = 8.f, gap = 5.f;
+		for (int i = 0; i < maxCount; i++) {
+			sf::RectangleShape pip(sf::Vector2f(w, h));
+			pip.setPosition(pos.x + i * (w + gap), pos.y);
+			if (i < count) pip.setFillColor(fill);
+			else {
+				pip.setFillColor(sf::Color(0, 0, 0, 150));
+				pip.setOutlineColor(sf::Color(fill.r, fill.g, fill.b, 80));
+				pip.setOutlineThickness(1.f);
+			}
+			target.draw(pip);
+		}
 	}
 }
 
@@ -124,17 +218,25 @@ void game::renderBackground(sf::RenderTarget& target)
 	gRenderFrame += 1.f;
 
 	sf::RectangleShape bg(sf::Vector2f((float)window->getSize().x, (float)window->getSize().y));
-	bg.setFillColor(sf::Color(3, 6, 20));
+	bg.setFillColor(sf::Color(6, 8, 14));
 	target.draw(bg);
 
+	// All stars in one draw call. During hyperspace they stretch into streaks,
+	// which is a rect rather than a disc — cheaper and reads better than a
+	// scaled circle.
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
+	const float streak = hyperspaceProgress > 0.01f ? (1.f + hyperspaceProgress * 15.f) : 0.f;
 	for (auto& star : stars) {
-		sf::CircleShape stretched = star.shape;
-		if (hyperspaceProgress > 0.01f) {
-			float stretch = 1.f + hyperspaceProgress * 15.f;
-			stretched.setScale(1.f, stretch);
-		}
-		target.draw(stretched);
+		sf::Vector2f p = star.shape.getPosition();
+		float r = star.shape.getRadius();
+		sf::Color c = star.shape.getFillColor();
+		if (streak > 0.f)
+			pushRect(batch, sf::Vector2f(p.x, p.y), sf::Vector2f(r * 2.f, r * 2.f * streak), c);
+		else
+			pushDisc(batch, sf::Vector2f(p.x + r, p.y + r), r, c, 6);
 	}
+	if (batch.getVertexCount()) target.draw(batch);
 }
 
 void game::renderMenu(sf::RenderTarget& target)
@@ -581,32 +683,41 @@ void game::renderEnemies(sf::RenderTarget& target)
 void game::renderPlayer(sf::RenderTarget& target)
 {
 	sf::Vector2f p = playerSprite.getPosition();
-	float thrust = 14.f + pulse(0.22f, 0.f, 6.f);
-	float auraBoost = (invincibilityTimer > 0.f ? 14.f : 0.f) + (deathRayTimer > 0.f ? 10.f : 0.f) + (fastFireTimer > 0.f ? 6.f : 0.f);
 
-	sf::CircleShape outer(28.f + auraBoost + pulse(0.08f, 0.f, 4.f));
-	outer.setOrigin(outer.getRadius(), outer.getRadius());
-	outer.setPosition(p);
-	outer.setFillColor(sf::Color(0, 180, 255, 20));
-	target.draw(outer);
+	// Four stacked translucent circles used to sit under the ship at all times —
+	// that permanent glow blob is most of what made the ship read as generic.
+	// Now the ship is just the ship, and rings appear only to say something.
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
 
-	sf::CircleShape flare(16.f + auraBoost * 0.4f);
-	flare.setOrigin(flare.getRadius(), flare.getRadius());
-	flare.setPosition(p);
-	flare.setFillColor(sf::Color(255, 255, 255, 20));
-	target.draw(flare);
+	// Engine bloom, small and tied to thrust
+	pushDisc(batch, p, 13.f + pulse(0.22f, 0.f, 3.f), sf::Color(90, 170, 255, 40), 14);
 
-	sf::CircleShape engine(thrust);
-	engine.setOrigin(engine.getRadius(), engine.getRadius());
-	engine.setPosition(p);
-	engine.setFillColor(sf::Color(0, 230, 255, 65));
-	target.draw(engine);
+	// Graze band: shows the exact radius that pays out, but only while you are
+	// actually earning it. Teaches the mechanic by being visible at the moment
+	// it fires.
+	if (grazeFlashTimer > 0.f) {
+		float t = grazeFlashTimer / 10.f;
+		pushRing(batch, p, 62.f, 2.5f, sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b, (sf::Uint8)(150 * t)), 44);
+	}
 
-	sf::CircleShape core(10.f + pulse(0.18f, 0.f, 2.f));
-	core.setOrigin(core.getRadius(), core.getRadius());
-	core.setPosition(p);
-	core.setFillColor(sf::Color(255, 255, 255, 28));
-	target.draw(core);
+	// Dash i-frames: you are untouchable, so say so plainly.
+	if (isDashing || invincibilityTimer > 0.f)
+		pushRing(batch, p, 30.f, 3.f, sf::Color(120, 220, 255, (sf::Uint8)pulse(0.3f, 120.f, 220.f)), 32);
+
+	// Ultimate running
+	if (ultimateActive) {
+		float t = ultimateActiveTimer / ultimateActiveMax;
+		pushRing(batch, p, 40.f + (1.f - t) * 10.f, 4.f,
+			sf::Color(255, 236, 190, (sf::Uint8)(200 * t)), 36);
+	}
+
+	// Ultimate charged and unspent — a small persistent tell on the ship itself,
+	// so you do not have to watch the HUD to know it is available.
+	if (!ultimateActive && ultimateCharge >= ultimateChargeMax)
+		pushRing(batch, p, 34.f, 2.f, sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b, (sf::Uint8)pulse(0.1f, 60.f, 170.f)), 30);
+
+	if (batch.getVertexCount()) target.draw(batch);
 
 	target.draw(shieldShape);
 	target.draw(playerSprite);
@@ -625,59 +736,95 @@ void game::renderDashTrail(sf::RenderTarget& target)
 
 void game::renderLasers(sf::RenderTarget& target)
 {
+	// Glow pass + core pass, both batched: 2 draw calls total instead of 3 per laser.
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
 	for (auto& l : lasers) {
-		sf::Color coreColor = l.shape.getFillColor();
+		sf::Color core = l.shape.getFillColor();
+		sf::Color glowCol = (core == sf::Color::White)
+			? sf::Color(70, 110, 255, 90)
+			: sf::Color(core.r, core.g, core.b, 80);
 
-		// Outer glow
-		sf::RectangleShape glow = l.shape;
-		glow.setSize(l.shape.getSize() + sf::Vector2f(16.f, 20.f));
-		glow.setOrigin(8.f, 10.f);
-		if (coreColor == sf::Color::White) {
-			glow.setFillColor(sf::Color(40, 40, 255, 80)); // Deep blue/purple glow
-		}
-		else {
-			glow.setFillColor(sf::Color(coreColor.r, coreColor.g, coreColor.b, 70));
-		}
-		target.draw(glow);
-
-		// Inner glow
-		sf::RectangleShape innerGlow = l.shape;
-		innerGlow.setSize(l.shape.getSize() + sf::Vector2f(6.f, 10.f));
-		innerGlow.setOrigin(3.f, 5.f);
-		if (coreColor == sf::Color::White) {
-			innerGlow.setFillColor(sf::Color(100, 100, 255, 150)); // Brighter blue inner glow
-		}
-		else {
-			innerGlow.setFillColor(sf::Color(coreColor.r, coreColor.g, coreColor.b, 140));
-		}
-		target.draw(innerGlow);
-
-		target.draw(l.shape);
+		// Widen around the shape's own local axes so rotation still lines up.
+		sf::Vector2f size = l.shape.getSize();
+		sf::Transform xf = l.shape.getTransform();
+		sf::Transform glowXf = xf;
+		glowXf.translate(-5.f, -6.f);
+		pushShapeRect(batch, glowXf, size + sf::Vector2f(10.f, 12.f), glowCol);
 	}
+	if (batch.getVertexCount()) target.draw(batch);
+
+	batch.clear();
+	for (auto& l : lasers)
+		pushShapeRect(batch, l.shape.getTransform(), l.shape.getSize(), l.shape.getFillColor());
+	if (batch.getVertexCount()) target.draw(batch);
 }
 
 void game::renderEnemyBullets(sf::RenderTarget& target)
 {
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
 	for (auto& b : enemyBullets) {
-		sf::CircleShape glow(b.shape.getRadius() * 2.1f);
-		glow.setOrigin(glow.getRadius(), glow.getRadius());
-		glow.setPosition(b.shape.getPosition() + sf::Vector2f(b.shape.getRadius(), b.shape.getRadius()));
-		glow.setFillColor(sf::Color(255, 80, 255, 60));
-		target.draw(glow);
-		target.draw(b.shape);
+		float r = b.shape.getRadius();
+		sf::Vector2f c = b.shape.getPosition() + sf::Vector2f(r, r);
+		pushDisc(batch, c, r * 2.1f, sf::Color(255, 80, 255, 55), 10);
+		pushDisc(batch, c, r, b.shape.getFillColor(), 10);
 	}
+	if (batch.getVertexCount()) target.draw(batch);
 }
 
 void game::renderParticles(sf::RenderTarget& target)
 {
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
 	for (auto& p : particles) {
-		sf::RectangleShape glow = p.shape;
-		glow.setScale(1.8f, 1.8f);
+		sf::Vector2f pos = p.shape.getPosition();
+		sf::Vector2f size = p.shape.getSize();
 		sf::Color c = p.shape.getFillColor();
-		glow.setFillColor(sf::Color(c.r, c.g, c.b, (sf::Uint8)(c.a / 3)));
-		target.draw(glow);
-		target.draw(p.shape);
+
+		// Halo, then core — same look as the old two-draw version, one call for all.
+		sf::Vector2f haloSize = size * 1.8f;
+		pushRect(batch, pos - (haloSize - size) / 2.f, haloSize,
+			sf::Color(c.r, c.g, c.b, (sf::Uint8)(c.a / 3)));
+		pushRect(batch, pos, size, c);
 	}
+	if (batch.getVertexCount()) target.draw(batch);
+}
+
+void game::renderShockwaves(sf::RenderTarget& target)
+{
+	if (shockwaves.empty()) return;
+
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
+	for (auto& w : shockwaves) {
+		float t = std::min(1.f, w.lifetime / w.maxLifetime);
+		sf::Uint8 a = (sf::Uint8)(220.f * (1.f - t) * (1.f - t));
+
+		// Two rings: a bright leading edge and a wider soft wake behind it.
+		pushRing(batch, w.pos, w.radius, w.thickness,
+			sf::Color(w.color.r, w.color.g, w.color.b, a));
+		pushRing(batch, w.pos, w.radius * 0.86f, w.thickness * 2.2f,
+			sf::Color(w.color.r, w.color.g, w.color.b, (sf::Uint8)(a / 4)));
+	}
+	target.draw(batch);
+}
+
+void game::renderDrones(sf::RenderTarget& target)
+{
+	if (drones.empty()) return;
+
+	batch.setPrimitiveType(sf::Triangles);
+	batch.clear();
+	for (auto& d : drones) {
+		sf::Vector2f p = d.shape.getPosition();
+		// Halo dims while the drone is on cooldown — readable status at a glance.
+		float ready = d.shootTimer <= 0 ? 1.f : 0.35f;
+		pushDisc(batch, p, 15.f, sf::Color(120, 235, 255, (sf::Uint8)(50 * ready)), 12);
+		pushDisc(batch, p, 7.f, sf::Color(150, 245, 255), 12);
+		pushDisc(batch, p, 3.f, sf::Color::White, 8);
+	}
+	target.draw(batch);
 }
 
 void game::renderPowerUps(sf::RenderTarget& target)
@@ -731,72 +878,163 @@ void game::renderScorePopups(sf::RenderTarget& target)
 
 void game::renderHUD(sf::RenderTarget& target)
 {
-	float hudX = (float)window->getSize().x - 330.f;
-	float hudY = (float)window->getSize().y - 235.f;
-	drawPanel(target, sf::Vector2f(hudX + 115.f, hudY + 78.f), sf::Vector2f(270.f, 240.f), sf::Color(0, 230, 255, 120), 55);
+	// One column, one grid, consistent row height. The old HUD mixed four
+	// unrelated bar styles and eight accent colours in 240 vertical pixels.
+	const float BAR_W = 236.f;
+	const float ROW = 34.f;
+	const float hudX = (float)window->getSize().x - 284.f;
+	// Content below runs 284px tall; the panel is sized to fit it with padding
+	// and sits 16px off the bottom edge. The previous numbers were 20px short,
+	// so the shield row and power-up strip fell off the screen.
+	float y = (float)window->getSize().y - 304.f;
 
-	sf::Text hudTitle; hudTitle.setFont(font); hudTitle.setCharacterSize(20);
-	hudTitle.setFillColor(sf::Color(200, 245, 255));
-	hudTitle.setString("STATUS");
-	hudTitle.setPosition(hudX, hudY - 56.f);
-	draw3DText(target, hudTitle);
+	drawPanel(target,
+		sf::Vector2f(hudX + BAR_W / 2.f, y + 138.f),
+		sf::Vector2f(BAR_W + 28.f, 300.f),
+		COL_CHROME, 40);
 
-	// Heat bar
-	sf::Text heatLabel; heatLabel.setFont(font); heatLabel.setCharacterSize(18);
-	heatLabel.setFillColor(isOverheated ? sf::Color::Red : sf::Color::White);
-	heatLabel.setString(isOverheated ? "OVERHEAT!" : "HEAT");
-	heatLabel.setPosition(hudX, hudY - 30.f); draw3DText(target, heatLabel);
+	// Reused for every label: one Text object, restyled per row. Constructing a
+	// fresh sf::Text per label per frame was pure waste.
+	sf::Text label;
+	label.setFont(font);
+	label.setCharacterSize(15);
+	label.setLetterSpacing(1.15f);
 
-	float heatRatio = heatLevel / heatMax;
-	sf::Color heatColor = heatRatio > 0.7f ? sf::Color::Red : heatRatio > 0.4f ? sf::Color(255, 165, 0) : sf::Color(0, 200, 100);
-	drawBar(target, sf::Vector2f(hudX, hudY - 10.f), sf::Vector2f(230.f, 13.f), heatRatio, heatColor);
+	auto row = [&](const char* text, sf::Color col, const char* rightText = nullptr) {
+		label.setCharacterSize(15);
+		label.setFillColor(col);
+		label.setString(text);
+		label.setPosition(hudX, y);
+		draw3DText(target, label);
 
-	// Dash cooldown bar
-	sf::Text dashLabel; dashLabel.setFont(font); dashLabel.setCharacterSize(18);
-	dashLabel.setFillColor(dashCooldown <= 0.f ? sf::Color::Cyan : sf::Color(150, 150, 150));
-	dashLabel.setString(dashCooldown <= 0.f ? "DASH - SPACE" : "DASH COOLING");
-	dashLabel.setPosition(hudX, hudY + 15.f); draw3DText(target, dashLabel);
+		if (rightText) {
+			label.setString(rightText);
+			sf::FloatRect b = label.getLocalBounds();
+			label.setFillColor(sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 190));
+			label.setPosition(hudX + BAR_W - b.width, y);
+			draw3DText(target, label);
+		}
+		y += 18.f;
+		};
 
-	float dashPct = 1.f - (dashCooldown / dashCooldownMax);
-	drawBar(target, sf::Vector2f(hudX, hudY + 38.f), sf::Vector2f(230.f, 9.f), dashPct, sf::Color::Cyan);
+	// ── ULTIMATE ──────────────────────────────────────────────────────
+	{
+		bool ready = ultimateCharge >= ultimateChargeMax;
+		const char* name = selectedShipClass == 1 ? "BULWARK"
+			: selectedShipClass == 2 ? "LANCE" : "OVERDRIVE";
 
-	// Power-up timers
-	float puY = hudY + 60.f;
-	float puMaxTime = 600.f;
-	struct PuInfo { float* timer; sf::Color color; const char* name; };
-	PuInfo pus[] = {
-		{ &invincibilityTimer, sf::Color::Yellow, "SHIELD" },
-		{ &deathRayTimer,      sf::Color::Red,    "D-RAY"  },
-		{ &fastFireTimer,      sf::Color::Cyan,   "RAPID"  },
-		{ &slowTimeTimer,      sf::Color::Blue,   "SLOW"   },
-	};
-	for (int pi = 0; pi < 4; pi++) {
-		if (*pus[pi].timer > 0.f) {
-			drawBar(target, sf::Vector2f(hudX + pi * 58.f, puY), sf::Vector2f(48.f, 8.f), *pus[pi].timer / puMaxTime, pus[pi].color);
-			sf::Text pLabel; pLabel.setFont(font); pLabel.setCharacterSize(14);
-			pLabel.setFillColor(pus[pi].color); pLabel.setString(pus[pi].name);
-			pLabel.setPosition(hudX + pi * 58.f, puY + 10.f); draw3DText(target, pLabel);
+		// No square brackets anywhere in the HUD: this pixel font has no glyph
+		// for them and draws a filled box instead.
+		if (ultimateActive) row(name, sf::Color(255, 236, 190), "ACTIVE");
+		else if (ready)     row(name, COL_MINE, "READY - Q");
+		else                row(name, sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 210), "Q");
+
+		float ratio = ultimateActive ? (ultimateActiveTimer / ultimateActiveMax)
+			: (ultimateCharge / ultimateChargeMax);
+		// Flashes only while READY and unspent — a permanently animated bar is
+		// noise, a bar that starts moving is a message.
+		sf::Color fill = ultimateActive ? sf::Color(255, 236, 190)
+			: ready ? sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b,
+				(sf::Uint8)(pulse(0.14f, 150.f, 255.f)))
+			: sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b, 200);
+		drawBar(target, sf::Vector2f(hudX, y), sf::Vector2f(BAR_W, 12.f), ratio, fill);
+		y += ROW;
+	}
+
+	// ── HEAT ──────────────────────────────────────────────────────────
+	{
+		float ratio = heatLevel / heatMax;
+		row(isOverheated ? "OVERHEATED" : "HEAT",
+			isOverheated ? COL_DANGER : sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 210));
+		sf::Color fill = isOverheated ? COL_DANGER
+			: ratio > 0.65f ? sf::Color(226, 140, 74)
+			: COL_CHROME;
+		drawBar(target, sf::Vector2f(hudX, y), sf::Vector2f(BAR_W, 8.f), ratio, fill);
+		y += ROW - 4.f;
+	}
+
+	// ── DASH ──────────────────────────────────────────────────────────
+	{
+		bool ready = dashCooldown <= 0.f;
+		row("DASH", ready ? COL_READY : sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 150),
+			ready ? "SPACE" : "");
+		drawBar(target, sf::Vector2f(hudX, y), sf::Vector2f(BAR_W, 8.f),
+			1.f - (dashCooldown / dashCooldownMax),
+			ready ? COL_READY : sf::Color(COL_READY.r, COL_READY.g, COL_READY.b, 110));
+		y += ROW - 4.f;
+	}
+
+	// ── SECONDARY ─────────────────────────────────────────────────────
+	{
+		bool ready = secondaryEnergy >= 30.f;
+		row("MISSILES", ready ? COL_READY : sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 150),
+			ready ? "RMB" : "");
+		drawBar(target, sf::Vector2f(hudX, y), sf::Vector2f(BAR_W, 8.f),
+			secondaryEnergy / secondaryEnergyMax,
+			ready ? COL_READY : sf::Color(COL_READY.r, COL_READY.g, COL_READY.b, 110));
+		y += ROW - 4.f;
+	}
+
+	// ── BOMBS ─────────────────────────────────────────────────────────
+	{
+		bool ready = bombCount > 0 && bombCooldownTimer <= 0.f;
+		row("BOMBS", ready ? COL_MINE : sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 150),
+			ready ? "SHIFT" : "");
+		drawPips(target, sf::Vector2f(hudX, y), bombCount, 3,
+			ready ? COL_MINE : sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b, 110));
+		y += ROW - 8.f;
+	}
+
+	// ── SHIELD / GRAZE ────────────────────────────────────────────────
+	{
+		std::stringstream ss;
+		if (shieldActive) ss << "SHIELD UP";
+		else ss << "SHIELD " << (int)(shieldRechargeTimer / shieldRechargeMax * 100.f) << "%";
+
+		std::stringstream gs;
+		if (grazeCount > 0) gs << "GRAZE x" << grazeCount;
+
+		label.setCharacterSize(15);
+		label.setFillColor(shieldActive ? COL_READY : sf::Color(COL_CHROME.r, COL_CHROME.g, COL_CHROME.b, 170));
+		label.setString(ss.str());
+		label.setPosition(hudX, y);
+		draw3DText(target, label);
+
+		if (grazeCount > 0) {
+			label.setString(gs.str());
+			sf::FloatRect b = label.getLocalBounds();
+			label.setFillColor(sf::Color(COL_MINE.r, COL_MINE.g, COL_MINE.b,
+				grazeFlashTimer > 0.f ? 255 : 200));
+			label.setPosition(hudX + BAR_W - b.width, y);
+			draw3DText(target, label);
+		}
+		y += 24.f;
+	}
+
+	// ── ACTIVE POWER-UPS ──────────────────────────────────────────────
+	// Only drawn when something is running, so the resting HUD stays quiet.
+	{
+		struct PuInfo { float* timer; sf::Color color; const char* name; };
+		PuInfo pus[] = {
+			{ &invincibilityTimer, COL_MINE,               "INVULN" },
+			{ &deathRayTimer,      COL_DANGER,             "D-RAY"  },
+			{ &fastFireTimer,      COL_READY,              "RAPID"  },
+			{ &slowTimeTimer,      sf::Color(150,160,230), "SLOW"   },
+		};
+		const float puMaxTime = 600.f;
+		float x = hudX;
+		for (int pi = 0; pi < 4; pi++) {
+			if (*pus[pi].timer <= 0.f) continue;
+			drawBar(target, sf::Vector2f(x, y + 14.f), sf::Vector2f(52.f, 5.f),
+				*pus[pi].timer / puMaxTime, pus[pi].color);
+			label.setCharacterSize(12);
+			label.setFillColor(pus[pi].color);
+			label.setString(pus[pi].name);
+			label.setPosition(x, y);
+			draw3DText(target, label);
+			x += 58.f;
 		}
 	}
-
-	// Shield status
-	sf::Text shieldLabel; shieldLabel.setFont(font); shieldLabel.setCharacterSize(18);
-	if (shieldActive) {
-		shieldLabel.setFillColor(sf::Color(0, 200, 255)); shieldLabel.setString("SHIELD: READY");
-	}
-	else {
-		float pct = shieldRechargeTimer / shieldRechargeMax;
-		std::stringstream ss; ss << "SHIELD: " << (int)(pct * 100) << "%";
-		shieldLabel.setString(ss.str()); shieldLabel.setFillColor(sf::Color(100, 100, 200));
-	}
-	shieldLabel.setPosition(hudX, puY + 35.f); draw3DText(target, shieldLabel);
-
-	// Secondary Energy bar
-	sf::Text secLabel; secLabel.setFont(font); secLabel.setCharacterSize(18);
-	secLabel.setFillColor(secondaryEnergy >= 30.f ? sf::Color::Cyan : sf::Color(100, 100, 100));
-	secLabel.setString("SECONDARY");
-	secLabel.setPosition(hudX, puY + 65.f); draw3DText(target, secLabel);
-	drawBar(target, sf::Vector2f(hudX, puY + 90.f), sf::Vector2f(230.f, 9.f), secondaryEnergy / secondaryEnergyMax, sf::Color(0, 150, 255));
 }
 
 

@@ -12,6 +12,7 @@ struct Boss2Proj {
     bool            homing;
     bool            isMissile = false;
     sf::Sprite      sprite;
+    bool            grazed = false;   // graze mechanic: award once per projectile
 };
 
 struct Boss2Minion {

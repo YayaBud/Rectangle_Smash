@@ -117,7 +117,12 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(ProjectDir)..\External\SFML\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>sfml-graphics-d.lib;sfml-window-d.lib;sfml-system-d.lib;sfml-audio-d.lib;sfml-network-d.lib</AdditionalDependencies>
+      <!-- Release must link the release SFML import libs. Linking the -d libs
+           here pulled in debug SFML DLLs, which are built with
+           _ITERATOR_DEBUG_LEVEL=2 while this exe compiles with 0 — std::vector
+           has a different layout on each side, so any SFML type holding one
+           (VertexArray, Text, ConvexShape) is corrupted across the boundary. -->
+      <AdditionalDependencies>sfml-graphics.lib;sfml-window.lib;sfml-system.lib;sfml-audio.lib;sfml-network.lib</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

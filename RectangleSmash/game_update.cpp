@@ -219,8 +219,14 @@ void game::updateSettings()
 		if (!mouseHeld) {
 			mouseHeld = true;
 			if (BackText.getGlobalBounds().contains(mousePosView)) {
-				state = (points > 0 || health < maxHealth) ? GameState::PAUSED : GameState::MENU;
-				debugLog("Settings back selected; state changed");
+				// SETTINGS is only ever entered from the main menu, so BACK goes
+				// to the main menu. The old test — "points > 0 || health <
+				// maxHealth, therefore a run is in progress" — stayed true after
+				// a run ended (neither value is reset on game over), so opening
+				// Settings once you had ever played dropped you into a paused,
+				// already-dead game.
+				state = GameState::MENU;
+				debugLog("Settings back -> MENU");
 			}
 			else if (MoveSpeedMinus.getGlobalBounds().contains(mousePosView)) {
 				basePlayerMoveSpeed -= 1.f; if (basePlayerMoveSpeed < 1.f) basePlayerMoveSpeed = 1.f;
@@ -392,7 +398,10 @@ void game::updateLasers()
 			lasers.push_back(nl);
 		}
 
-		laserSounds[currentLaserSoundIndex].setPitch(deathRayTimer > 0.f ? 0.88f : (comboCount >= 5 ? 1.08f : 1.f));
+		// Per-shot pitch jitter. Identical samples fired 20x/second fuse into a
+		// buzz; ±4% detune is what makes a stream of shots sound like a weapon.
+		float basePitch = deathRayTimer > 0.f ? 0.88f : (comboCount >= 5 ? 1.08f : 1.f);
+		laserSounds[currentLaserSoundIndex].setPitch(basePitch + (rand() % 81 - 40) * 0.001f);
 		laserSounds[currentLaserSoundIndex].setVolume(deathRayTimer > 0.f ? 60.f : (numShots >= 5 ? 42.f : 45.f));
 		laserSounds[currentLaserSoundIndex].play();		currentLaserSoundIndex = (currentLaserSoundIndex + 1) % MAX_LASER_SOUNDS;
 
@@ -796,6 +805,13 @@ void game::updatePowerUps()
 //  PARTICLES
 void game::updateParticles()
 {
+	// Nothing throttled particle spawning, so a boss death during a heavy wave
+	// could queue tens of thousands of them. Trim the oldest past the budget —
+	// they are the most faded, so the cut is invisible.
+	const size_t MAX_PARTICLES = 1500;
+	if (particles.size() > MAX_PARTICLES)
+		particles.erase(particles.begin(), particles.begin() + (particles.size() - MAX_PARTICLES));
+
 	for (size_t i = 0; i < particles.size(); i++) {
 		particles[i].shape.move(particles[i].velocity);
 		particles[i].lifetime++;
@@ -915,6 +931,12 @@ void game::updateWave()
 			waveBannerText.setOrigin(wb.left + wb.width / 2.f, wb.top + wb.height / 2.f);
 			waveBannerTimer = waveBannerTimerMax;
 			waveCompleteSound.play();
+
+			// Ability economy: bombs were spent permanently (start with 3, then
+			// never again) and drones were never granted at all.
+			if (bombCount < 3) bombCount++;
+			if (currentWave % 5 == 0) grantDrone();
+
 			debugLog("Wave started: " + std::to_string(currentWave) +
 				" enemiesNeeded=" + std::to_string(enemiesNeededInWave) +
 				" speedBonus=" + std::to_string(waveEnemySpeedBonus));
